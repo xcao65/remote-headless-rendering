@@ -1,0 +1,133 @@
+---
+- name: Create WireGuard root key directory
+  file:
+    dest: "{{ wireguard_remote_directory }}/keys"
+    state: directory
+    mode: 0755
+  become: yes
+  tags:
+    - wg-generate-keys
+
+- name: Create WireGuard client key directory for {{ client }}
+  file:
+    dest: "{{ wireguard_remote_directory }}/keys/{{ client }}"
+    state: directory
+    mode: 0755
+  become: yes
+  tags:
+    - wg-generate-keys
+
+- name: Register if config/private key already exists on target host
+  stat:
+    path: "{{ wireguard_remote_directory }}/keys/{{client}}/key"
+  register: wireguard__register_client_private_key_file
+  tags:
+    - wg-generate-keys
+
+- name: Register if config/private key already exists on target host
+  stat:
+    path: "{{ wireguard_remote_directory }}/keys/{{client}}/key.pub"
+  become: true
+  register: wireguard__register_client_public_key_file
+  tags:
+    - wg-generate-keys
+
+- name: Generate keys
+  block:
+    - name: Generate WireGuard private key
+      ansible.builtin.command: "wg genkey"
+      register: wireguard__register_client_private_key
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+
+    - name: Derive WireGuard public key
+      ansible.builtin.command: "wg pubkey"
+      args:
+        stdin: "{{ wireguard__register_client_private_key.stdout }}"
+      register: wireguard__register_client_public_key
+      changed_when: false
+      no_log: '{{ ansible_verbosity < 3 }}'
+
+    - name: Store private key
+      copy:
+        content: "{{ wireguard__register_client_private_key.stdout }}"
+        dest: "{{ wireguard_remote_directory }}/keys/{{client}}/key"
+        mode: 0700
+        owner: root
+      become: yes
+      no_log: '{{ ansible_verbosity < 3 }}'
+
+    - name: Store public key
+      copy:
+        content: "{{ wireguard__register_client_public_key.stdout }}"
+        dest: "{{ wireguard_remote_directory }}/keys/{{client}}/key.pub"
+        mode: 0700
+        owner: root
+      become: yes
+      no_log: '{{ ansible_verbosity < 3 }}'
+  tags:
+    - wg-generate-keys
+  when:
+    - not wireguard__register_client_private_key_file.stat.exists  
+
+- name: Load keys
+  block:
+    - name: Generate WireGuard private key
+      ansible.builtin.command: "cat {{ wireguard_remote_directory }}/keys/{{client}}/key"
+      register: wireguard__register_client_private_key
+      changed_when: false
+      become: yes
+      no_log: '{{ ansible_verbosity < 3 }}'
+
+    - name: Derive WireGuard public key
+      ansible.builtin.command: "cat {{ wireguard_remote_directory }}/keys/{{client}}/key.pub"
+      register: wireguard__register_client_public_key
+      changed_when: false
+      become: yes
+      no_log: '{{ ansible_verbosity < 3 }}'
+  tags:
+    - wg-generate-keys 
+
+- name: Populate Key facts
+  set_fact:
+    wireguard__server_ip: "{{ networkInterfaces[0]['networkIP'] }}"
+    wireguard__server_public_ip: "{{ networkInterfaces[0]['accessConfigs'][0]['natIP'] }}"
+    wireguard__server_public_key: "{{ wireguard__register_public_key.stdout }}"
+    wireguard__client_ip: "{{ wireguard_client_ip_start | ansible.utils.ipmath(client_idx) }}"
+    wireguard__client_private_key: "{{ wireguard__register_client_private_key.stdout }}"
+    wireguard__client_public_key: "{{ wireguard__register_client_public_key.stdout }}"
+  no_log: '{{ ansible_verbosity < 3 }}'
+
+- name: Populate remote key facts
+  set_fact:
+    wireguard__server_ip: "{{ networkInterfaces[0]['networkIP'] }}"
+    wireguard__server_public_ip: "{{ networkInterfaces[0]['accessConfigs'][0]['natIP'] }}"
+    wireguard__server_public_key: "{{ wireguard__register_public_key.stdout }}"
+    wireguard__client_ip: "{{ wireguard_client_ip_start | ansible.utils.ipmath(client_idx) }}"
+    wireguard__client_private_key: "{{ wireguard__register_client_private_key.stdout }}"
+    wireguard__client_public_key: "{{ wireguard__register_client_public_key.stdout }}"
+  delegate_to: "{{ client }}"
+  delegate_facts: true
+  no_log: '{{ ansible_verbosity < 3 }}'
+  when: 
+   - client != 'bridge' 
+
+- name: Store key facts for bridge to localhost
+  ansible.builtin.template:
+    src: etc/wireguard/client-wg.conf.j2
+    dest: "~/wg0.conf"
+  delegate_to: localhost
+  vars:
+    server_ip: "{{ wireguard__server_public_ip }}"
+  when: 
+   - client == 'bridge' 
+
+- name: Aggregate keys in bucket for server config
+  set_fact:
+    wireguard_client_keys: "{{ wireguard_client_keys|default([]) | combine({client: {'hostname': client, 'private_key': wireguard__client_private_key, 'pub_key': wireguard__client_public_key, 'ip': wireguard__client_ip }}) }}"
+  no_log: '{{ ansible_verbosity < 3 }}'
+
+- name: Bucket state
+  debug:
+    var: wireguard_client_keys
+

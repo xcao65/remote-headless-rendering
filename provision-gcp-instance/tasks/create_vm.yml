@@ -1,0 +1,85 @@
+---
+#estlablish facts
+
+- name: Add owner to labels
+  set_fact:
+     additional_labels: "{{ additional_labels | default({}) | combine({item.key: item.value}) }}"
+  with_items:
+   - { key: 'owner', value: "{{ unix_user }}" }
+
+- name: Set SSH login details
+  set_fact:
+     ssh_public_login_key: "{{ ssh_login_name + ':' + ssh_public_key }}"
+
+# Configure Compute Resource
+
+- name: Create IP address for instance name
+  gcp_compute_address:
+    name: "{{ resource_prefix + instance_name }}"
+    region: "{{ gcp_region }}"
+    project: "{{ gcp_project }}"
+    auth_kind: "{{ gcp_cred_kind }}"
+    service_account_file: "{{ gcp_cred_file }}"
+    state: present
+  register: address
+
+- name: Create disk for new instance
+  gcp_compute_disk:
+    name: "{{ resource_prefix + instance_name }}"
+    size_gb: "{{ disk_size_gb }}"
+    source_image: "{{ gcp_source_image }}"
+    labels: "{{ additional_labels }}"
+    zone: "{{ gcp_zone }}"
+    project: "{{ gcp_project }}"
+    auth_kind: "{{ gcp_cred_kind }}"
+    service_account_file: "{{ gcp_cred_file }}"
+    state: present
+  register: disk
+
+
+- name: Create new instance
+  gcp_compute_instance:
+    name: "{{ resource_prefix + instance_name }}"
+    machine_type: "{{ cpu_type }}"
+    guest_accelerators: >-
+      {%- if gpu_count > 0 -%}
+      [{"accelerator_count": "{{ gpu_count }}", "accelerator_type": "projects/{{ gcp_project }}/zones/{{ gcp_zone }}/acceleratorTypes/{{gpu_type}}"}]
+      {%- else -%}
+      []
+      {%- endif %}
+    scheduling:
+      on_host_maintenance : TERMINATE
+      automatic_restart : yes
+    labels: "{{ additional_labels }}"
+    disks:
+    - auto_delete: true
+      boot: true
+      source: "{{ disk }}"
+    network_interfaces:
+    - network: "{{ network }}"
+      subnetwork: "{{ subnet }}"
+      access_configs:
+        - name: External NAT
+          nat_ip: "{{ address }}"
+          type: ONE_TO_ONE_NAT
+    zone: "{{ gcp_zone }}"
+    tags:
+      items: "{{ [resource_prefix] | product(default_tags) | map('join') | list + extended_tags }}"
+    project: "{{ gcp_project }}"
+    auth_kind: "{{ gcp_cred_kind }}"
+    service_account_file: "{{ gcp_cred_file }}"
+    scopes:
+      - https://www.googleapis.com/auth/compute
+    metadata:
+      ssh-keys: "{{ ssh_public_login_key }}"
+    state: present
+  register: instance
+
+- debug:
+    var: instance
+
+
+# not sure if there's a better way around this
+- name: clean up old hosts
+  tags: create, ssh-fix
+  command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ address.address }}"

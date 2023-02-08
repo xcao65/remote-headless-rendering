@@ -1,0 +1,60 @@
+
+- name: Check if installer exists
+  stat:
+    path: /home/unity/UnitySetup-2021.3.4f1
+  register: unity_installer_stat
+
+- name: Check if editor exists
+  stat:
+    path: /home/unity/unity/Editor/Unity
+  register: unity_editor_stat
+
+- name: Check if license exists
+  stat:
+    path: /home/unity/.local/share/unity3d/Unity/Unity_lic.ulf
+  register: unity_license_stat
+  tags:
+    - always
+
+- name: Install required dependency packages
+  apt:
+    pkg:
+      - libarchive-dev
+      - golang-1.18-go
+      - libssl-dev
+    state: latest
+    update_cache: true
+  become: yes
+
+- name: Check if libssl1 exists
+  stat:
+    path: /usr/lib/x86_64-linux-gnu/libssl.so.1.0.0
+  register: libssl1_stat
+
+- name: Install legacy version of libssl1 since Unity doesn't support libssl3 :(
+  shell: wget http://security.ubuntu.com/ubuntu/pool/main/o/openssl1.0/libssl1.0.0_1.0.2n-1ubuntu5.10_amd64.deb && dpkg -i libssl1.0.0_1.0.2n-1ubuntu5.10_amd64.deb
+  become: yes
+  when: not libssl1_stat.stat.exists
+
+- name: Download Unity Installer
+  ansible.builtin.get_url:
+    url: https://download.unity3d.com/download_unity/cb45f9cae8b7/UnitySetup-2021.3.4f1
+    dest: /home/unity/UnitySetup-2021.3.4f1
+    mode: '0700'
+  when: not unity_installer_stat.stat.exists
+
+- name: Install Unity
+  shell: |
+    yes | /home/unity/UnitySetup-2021.3.4f1 --unattended --components=Unity,Linux-IL2CPP,Linux-Server,Mac-Mono,Mac-Server,Windows-Mono,Windows-Server --install-location=/home/unity/unity/
+  when: not unity_editor_stat.stat.exists
+
+- name: Activate Unity License
+  shell: "/home/unity/unity/Editor/Unity -quit -batchmode -nographics -serial '{{ unity_serial }}' -username '{{ unity_user }}' -password '{{ unity_pass }}'"
+  when: not unity_license_stat.stat.exists
+
+- name: Deactivate Unity License
+  shell: "/home/unity/unity/Editor/Unity -quit -batchmode -nographics -returnlicense -username '{{ unity_user }}' -password '{{ unity_pass }}'"
+  when: unity_license_stat.stat.exists
+  tags:
+    - never
+    - delete

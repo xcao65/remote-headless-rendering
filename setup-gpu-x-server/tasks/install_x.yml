@@ -1,0 +1,147 @@
+---
+- name: wait to connect, might be rebooting still
+  block:
+    - name: wait to connect
+      wait_for_connection:
+        delay: 0
+        timeout: 300
+  rescue:
+    - name: handle connection error
+      fail:
+        msg: "Could not connect"
+
+# - name: Add NVidia GPG apt Key
+#   apt_key:
+#     url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub
+#     state: present
+#   become: yes
+
+# - name: Add Docker Repository
+#   apt_repository:
+#     repo: deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /
+#     state: present
+#   become: yes
+
+- name: Allow anybody to run xorg
+  ansible.builtin.debconf:
+    name: xserver-xorg-legacy
+    question: xserver-xorg-legacy/xwrapper/allowed_users
+    value: 'Anybody'
+    vtype: select
+  become: yes
+
+- name: Install system packages
+  apt:
+    pkg:
+      - linux-modules-nvidia-510-gcp
+      - nvidia-driver-510
+      - nvidia-utils-510
+      - xserver-xorg
+      - mesa-utils
+      - xinit
+      - xterm
+      - scrot
+      - fluxbox
+      - xpra
+      - libegl1-mesa
+      # - primus-vk-nvidia
+    state: latest
+    update_cache: true
+  become: yes
+  register: packages
+
+- name: Check if virtualgl exists
+  stat:
+    path: /usr/bin/vglrun
+  register: virtualgl_stat
+
+- name: Install virtualgl 3.0.2
+  shell: wget https://s3.amazonaws.com/virtualgl-pr/main/linux/virtualgl_3.0.2_amd64.deb && dpkg -i virtualgl_3.0.2_amd64.deb
+  become: yes
+  when: not virtualgl_stat.stat.exists
+
+- name: Restart server if new packages were installed
+  ansible.builtin.reboot:
+      reboot_timeout: 3600
+  become: yes
+  when: packages is changed
+  register: reboot
+
+- name: Wait for the reboot to complete if there was a change.
+  wait_for_connection:
+    connect_timeout: 20
+    sleep: 5
+    delay: 30
+    timeout: 3600
+  when: (packages is changed) and (reboot is changed)
+
+- name: Allow anybody to run xorg
+  command: "dpkg-reconfigure -f noninteractive xserver-xorg-legacy"
+  become: yes
+  when: packages is changed
+
+- name: Enable GPU to run in graphics mode
+  command: "nvidia-smi --gom=0"
+  become: yes
+  when: packages is changed
+
+# - name: Generate xorg config
+#   command: "nvidia-xconfig -a --allow-empty-initial-configuration --virtual=1920x1200 --busid PCI:0:4:0"
+#   become: yes
+#   when: packages is changed
+
+- name: Install xorg.conf
+  ansible.builtin.template:
+    src: xorg.conf
+    dest: /etc/X11/xorg.conf
+    owner: root
+    group: root
+    mode: u=rw,g=r,o=r
+  become: yes
+
+- name: Configure Xwrapper to allow root 
+  ansible.builtin.template:
+    src: Xwrapper.config
+    dest: /etc/X11/Xwrapper.config
+    owner: root
+    group: root
+    mode: u=rw,g=r,o=r
+  become: yes
+
+- name: Ensure directory for systemd units exists
+  file:
+    path: /home/unity/.config/systemd/user/
+    state: directory
+
+
+- name: Add a xorg@.socket file 
+  ansible.builtin.template:
+    src: xorg@.socket
+    dest: /home/unity/.config/systemd/user/xorg@.socket
+    owner: unity
+    mode: 0600
+
+- name: Add a xorg@.service file 
+  ansible.builtin.template:
+    src: xorg@.service
+    dest: /home/unity/.config/systemd/user/xorg@.service
+    owner: unity
+    mode: 0600
+  register: xorg_user_service
+
+- name: Register if unity user has linger enabled
+  stat:
+    path: /var/lib/systemd/linger/unity
+  register: unity_has_linger
+
+- name: Enable lingering for unity user
+  command: loginctl enable-linger unity
+  become: yes
+  when: not unity_has_linger.stat.exists
+
+- name: Ensure X server is running
+  ansible.builtin.systemd:
+    state: started
+    enabled: yes
+    name: xorg@0.service
+    scope: user

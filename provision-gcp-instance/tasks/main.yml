@@ -1,0 +1,21 @@
+---
+- import_tasks: create_network.yml
+  tags:
+    - create
+- import_tasks: create_vm.yml
+  tags:
+    - create
+- import_tasks: delete_vm.yml
+  tags:
+    - delete
+    - never
+- meta: refresh_inventory
+  tags:
+    - delete
+    - never
+- import_tasks: delete_network.yml
+  tags:
+    - delete
+    - never
+  when: groups['all'] | length == 0
+- meta: refresh_inventory

@@ -1,0 +1,22 @@
+---
+- name: wait to connect, might be rebooting still
+  block:
+    - name: wait to connect
+      wait_for_connection:
+        delay: 0
+        timeout: 300
+  rescue:
+    - name: handle connection error
+      fail:
+        msg: "Could not connect"
+
+- import_tasks: install_x.yml
+  tags:
+    - create
+
+- import_tasks: install_unity.yml
+  tags:
+    - create
+
+- name: Bye World
+  shell: echo "Bye, world."
